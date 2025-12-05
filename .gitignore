@@ -30,8 +30,5 @@ env/
 .vscode/
 .idea/
 
-# User specifically requested to ignore README.md
-README.md
-
 # Application specific
 config.json
