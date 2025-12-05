@@ -2,6 +2,8 @@
 
 Aplikasi otomatisasi trading dengan eksekusi cepat dan antarmuka intuitif.
 
+<img width="500" height="306" alt="image" src="https://github.com/user-attachments/assets/033eea3e-49f8-40ce-b71c-17a289edd68c" />
+
 ## Fitur
 
 - **Multi-Mode Click**: Single, Double, atau Burst (klik beruntun)
