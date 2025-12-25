@@ -130,92 +130,93 @@ class Executor:
             # Get fresh data each time the hotkey is triggered
             action_data = data_getter() if callable(data_getter) else data_getter
             
-            coords = action_data.get('coords', [])
-            # Backward compatibility
-            if not coords:
-                coords = [{"x": action_data.get('x', 0), "y": action_data.get('y', 0)}]
-            
-            total = len(coords)
-            delay_ms = action_data.get('delay_ms', 100)
-            name = action_data.get('name', 'Action')
-            
-            # Reset cancellation state and store initial mouse position
-            self._execution_cancelled = False
-            if self.cancel_on_mouse_move:
-                self._initial_mouse_pos = self._get_mouse_pos()
-            
-            # Notify execution start
-            if self.execution_start_callback:
-                self.execution_start_callback()
-            
-            if self.status_callback:
-                if total > 1:
-                    self.status_callback(f"{name}: {total} clicks, {delay_ms}ms delay")
-                else:
-                    self.status_callback(f"Executing: {name}")
-            
-            for i, coord in enumerate(coords):
-                # Check if cancelled due to mouse movement
-                if self._check_mouse_moved():
-                    self._execution_cancelled = True
-                    if self.status_callback:
-                        self.status_callback(f"⚠️ Cancelled: Mouse moved")
-                    break
+            try:
+                coords = action_data.get('coords', [])
+                # Backward compatibility
+                if not coords:
+                    coords = [{"x": action_data.get('x', 0), "y": action_data.get('y', 0)}]
                 
-                if self.status_callback and total > 1:
-                    self.status_callback(f"{name}: Click {i+1}/{total} @ {coord['x']},{coord['y']}")
+                total = len(coords)
+                delay_ms = action_data.get('delay_ms', 100)
+                name = action_data.get('name', 'Action')
                 
-                # Show visual indicator at click position
-                if self.click_indicator_callback:
-                    self.click_indicator_callback(coord['x'], coord['y'])
-                
-                self.click(
-                    coord['x'], 
-                    coord['y'], 
-                    action_data.get('button', 'left'), 
-                    action_data.get('mode', 'single').lower(), 
-                    action_data.get('burst_count', 3)
-                )
-                
-                # Update mouse position tracking after click
+                # Reset cancellation state and store initial mouse position
+                self._execution_cancelled = False
                 if self.cancel_on_mouse_move:
                     self._initial_mouse_pos = self._get_mouse_pos()
                 
-                if i < total - 1:  # Don't delay after last click
-                    # Countdown timer with status updates
-                    remaining_ms = delay_ms
-                    update_interval = 100  # Update every 100ms
-                    
-                    while remaining_ms > 0:
-                        # Check for mouse movement during delay
-                        if self._check_mouse_moved():
-                            self._execution_cancelled = True
-                            if self.status_callback:
-                                self.status_callback(f"⚠️ Cancelled: Mouse moved")
-                            break
-                        
+                # Notify execution start
+                if self.execution_start_callback:
+                    self.execution_start_callback()
+                
+                if self.status_callback:
+                    if total > 1:
+                        self.status_callback(f"{name}: {total} clicks, {delay_ms}ms delay")
+                    else:
+                        self.status_callback(f"Executing: {name}")
+                
+                for i, coord in enumerate(coords):
+                    # Check if cancelled due to mouse movement
+                    if self._check_mouse_moved():
+                        self._execution_cancelled = True
                         if self.status_callback:
-                            # Format remaining time nicely
-                            if remaining_ms >= 1000:
-                                time_str = f"{remaining_ms/1000:.1f}s"
-                            else:
-                                time_str = f"{remaining_ms}ms"
-                            self.status_callback(f"{name}: ⏱ {time_str} → Click {i+2}/{total}")
-                        
-                        sleep_time = min(update_interval, remaining_ms)
-                        time.sleep(sleep_time / 1000.0)
-                        remaining_ms -= sleep_time
-                    
-                    # Break outer loop if cancelled
-                    if self._execution_cancelled:
+                            self.status_callback(f"⚠️ Cancelled: Mouse moved")
                         break
-            
-            if not self._execution_cancelled and self.status_callback:
-                self.status_callback(f"Done: {name} ({total} clicks)")
-            
-            # Notify execution end
-            if self.execution_end_callback:
-                self.execution_end_callback()
+                    
+                    if self.status_callback and total > 1:
+                        self.status_callback(f"{name}: Click {i+1}/{total} @ {coord['x']},{coord['y']}")
+                    
+                    # Show visual indicator at click position
+                    if self.click_indicator_callback:
+                        self.click_indicator_callback(coord['x'], coord['y'])
+                    
+                    self.click(
+                        coord['x'], 
+                        coord['y'], 
+                        action_data.get('button', 'left'), 
+                        action_data.get('mode', 'single').lower(), 
+                        action_data.get('burst_count', 3)
+                    )
+                    
+                    # Update mouse position tracking after click
+                    if self.cancel_on_mouse_move:
+                        self._initial_mouse_pos = self._get_mouse_pos()
+                    
+                    if i < total - 1:  # Don't delay after last click
+                        # Countdown timer with status updates
+                        remaining_ms = delay_ms
+                        update_interval = 100  # Update every 100ms
+                        
+                        while remaining_ms > 0:
+                            # Check for mouse movement during delay
+                            if self._check_mouse_moved():
+                                self._execution_cancelled = True
+                                if self.status_callback:
+                                    self.status_callback(f"⚠️ Cancelled: Mouse moved")
+                                break
+                            
+                            if self.status_callback:
+                                # Format remaining time nicely
+                                if remaining_ms >= 1000:
+                                    time_str = f"{remaining_ms/1000:.1f}s"
+                                else:
+                                    time_str = f"{remaining_ms}ms"
+                                self.status_callback(f"{name}: ⏱ {time_str} → Click {i+2}/{total}")
+                            
+                            sleep_time = min(update_interval, remaining_ms)
+                            time.sleep(sleep_time / 1000.0)
+                            remaining_ms -= sleep_time
+                        
+                        # Break outer loop if cancelled
+                        if self._execution_cancelled:
+                            break
+                
+                if not self._execution_cancelled and self.status_callback:
+                    self.status_callback(f"Done: {name} ({total} clicks)")
+            finally:
+                # Notify execution end - ALWAYS call this to clean up UI indicators
+                if self.execution_end_callback:
+                    self.execution_end_callback()
         
         try:
             keyboard.add_hotkey(key_combo, on_triggered)

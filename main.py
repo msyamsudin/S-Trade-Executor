@@ -633,10 +633,14 @@ class App(ctk.CTk):
         self.executor.execution_end_callback = self._on_execution_end
         self.executor.start_listening()
         self.update_state_display()
+        # Setup taskbar visibility for overrideredirect window
+        self.after(100, self.setup_taskbar)
+        self.bind("<Map>", self.on_restore)
         
         # Glow effect for cursor during execution
         self._cursor_glow = None
         self._glow_running = False
+        self._is_setting_up_taskbar = False
         
         # Test indicators
         self.test_indicators = []
@@ -656,7 +660,7 @@ class App(ctk.CTk):
             title="S-Trade-Executor", 
             height=30,
             close_command=self.on_closing,
-            minimize_command=self.iconify
+            minimize_command=self.minimize_window
         )
         self.title_bar.grid(row=0, column=0, sticky="ew")
 
@@ -766,6 +770,60 @@ class App(ctk.CTk):
         state = "enabled" if self.cancel_mouse_var.get() else "disabled"
         self.status_label.configure(text=f"Cancel on move {state}")
 
+    def setup_taskbar(self):
+        """Ensure the window appears in the taskbar even with overrideredirect(True)."""
+        GWL_EXSTYLE = -20
+        WS_EX_APPWINDOW = 0x00040000
+        WS_EX_TOOLWINDOW = 0x00000080
+        
+        try:
+            # Get the window handle (HWND)
+            # winfo_id() returns the container ID, but we need the main window HWND on Windows
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            
+            # Modify the window style to show on taskbar
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            style = style & ~WS_EX_TOOLWINDOW
+            style = style | WS_EX_APPWINDOW
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+            
+            # Update the window to apply changes (flicker-free if possible)
+            self._is_setting_up_taskbar = True
+            self.withdraw()
+            self.after(10, self._finish_setup_taskbar)
+        except Exception as e:
+            print(f"Failed to setup taskbar: {e}")
+
+    def _finish_setup_taskbar(self):
+        """Finalize taskbar setup and release the guard flag."""
+        try:
+            self.deiconify()
+        finally:
+            self.after(500, self._release_taskbar_guard)
+
+    def _release_taskbar_guard(self):
+        """Release the flag after a short delay to avoid catching own deiconify event."""
+        self._is_setting_up_taskbar = False
+
+    def minimize_window(self):
+        """Properly minimize the window while maintaining custom styling."""
+        self.update_idletasks()
+        self.overrideredirect(False)
+        self.state('iconic')
+
+    def on_restore(self, event=None):
+        """Restore custom title bar after window is restored from minimize."""
+        # Only process if restoring the main window and not already in setup
+        if (event and event.widget != self) or self._is_setting_up_taskbar:
+            return
+            
+        if self.state() == 'normal':
+            self._is_setting_up_taskbar = True
+            # Re-apply overrideredirect if it was disabled for minimization
+            self.overrideredirect(True)
+            # Re-apply taskbar styling after restoration
+            self.after(10, self.setup_taskbar)
+
     def add_action(self, data=None, is_new=False):
         if data is None:
             data = {"name": "New Action", "hotkey": "Bind Key", "coords": [{"x": 0, "y": 0}], "mode": "Single", "delay_ms": 1000}
@@ -856,12 +914,18 @@ class App(ctk.CTk):
         canvas.bind("<Button-1>", lambda e: self._dismiss_indicator(indicator))
     
     def _dismiss_indicator(self, indicator):
+        """Manually dismiss an indicator."""
+        self._safe_destroy(indicator)
+        if indicator in self.test_indicators:
+            self.test_indicators.remove(indicator)
+        if not self.test_indicators:
+            self.active_test_card = None
+
+    def _safe_destroy(self, widget):
+        """Safely destroy a widget if it still exists."""
         try:
-            indicator.destroy()
-            if indicator in self.test_indicators:
-                self.test_indicators.remove(indicator)
-            if not self.test_indicators:
-                self.active_test_card = None
+            if widget.winfo_exists():
+                widget.destroy()
         except:
             pass
     
@@ -877,6 +941,9 @@ class App(ctk.CTk):
         
         try:
             indicator = ctk.CTkToplevel(self)
+            # Hard safety timeout to ensure destruction even if animation fails
+            self.after(1000, lambda: self._safe_destroy(indicator))
+            
             indicator.geometry(f"{size}x{size}+{x-half}+{y-half}")
             indicator.overrideredirect(True)
             indicator.attributes("-topmost", True)
@@ -891,23 +958,23 @@ class App(ctk.CTk):
             ring = canvas.create_oval(half-5, half-5, half+5, half+5, outline=ring_color, width=3)
             
             def expand(step=0):
-                if step >= 12:
-                    try:
-                        indicator.destroy()
-                    except:
-                        pass
+                if step >= 15: # Slightly more steps for smoother finish
+                    self._safe_destroy(indicator)
                     return
                 try:
+                    if not indicator.winfo_exists():
+                        return
+                        
                     # Expand the ring
                     expand_size = 5 + step * 2
                     canvas.coords(ring, 
                         half - expand_size, half - expand_size,
                         half + expand_size, half + expand_size)
                     # Fade out
-                    indicator.attributes("-alpha", 1.0 - (step * 0.08))
-                    self.after(40, lambda: expand(step + 1))
+                    indicator.attributes("-alpha", 1.0 - (step * 0.06))
+                    self.after(30, lambda: expand(step + 1))
                 except:
-                    pass
+                    self._safe_destroy(indicator)
             
             expand()
         except:
@@ -915,27 +982,46 @@ class App(ctk.CTk):
     
     def _on_execution_start(self):
         """Called when autoclick execution starts."""
+        self._glow_running = True
         self.after(0, self._create_cursor_glow)
     
     def _on_execution_end(self):
         """Called when autoclick execution ends."""
+        self._glow_running = False
         self.after(0, self._destroy_cursor_glow)
     
     def _create_cursor_glow(self):
         """Create a glow effect that follows the cursor."""
-        if self._cursor_glow:
-            return  # Already exists
+        if not self._glow_running or (self._cursor_glow and self._cursor_glow != "placeholder"):
+            return  # Execution already ended or glow already exists
         
+        # Mark as creating/active to prevent race conditions
+        self._cursor_glow = "placeholder"
         self._glow_running = True
         size = 60
+        half = size // 2
         
         try:
+            # Get current mouse position for initial placement
+            pt = ctypes.wintypes.POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            x, y = pt.x, pt.y
+            
             glow = ctk.CTkToplevel(self)
+            # Safety timeout - destroy glow if it stays longer than 10s (failsafe)
+            self.after(10000, lambda: self._safe_destroy(glow))
+            
+            # Check if execution already ended while we were creating the window
+            if not self._glow_running:
+                glow.destroy()
+                self._cursor_glow = None
+                return
+            
             glow.overrideredirect(True)
             glow.attributes("-topmost", True)
             glow.attributes("-transparentcolor", "black")
             glow.configure(fg_color="black")
-            glow.geometry(f"{size}x{size}")
+            glow.geometry(f"{size}x{size}+{x-half}+{y-half}")
             
             canvas = tk.Canvas(glow, width=size, height=size, bg="black", highlightthickness=0)
             canvas.pack(fill="both", expand=True)
@@ -962,10 +1048,15 @@ class App(ctk.CTk):
     
     def _update_glow_position(self):
         """Update glow position to follow cursor."""
-        if not self._glow_running or not self._cursor_glow:
+        if not self._glow_running or not self._cursor_glow or self._cursor_glow == "placeholder":
             return
         
         try:
+            if not self._cursor_glow.winfo_exists():
+                self._cursor_glow = None
+                self._glow_running = False
+                return
+
             # Get current mouse position
             pt = ctypes.wintypes.POINT()
             ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
@@ -977,7 +1068,10 @@ class App(ctk.CTk):
             # Continue updating
             self.after(16, self._update_glow_position)  # ~60fps
         except:
-            pass
+            # If update fails multiple times, cleanup
+            self._safe_destroy(self._cursor_glow)
+            self._cursor_glow = None
+            self._glow_running = False
     
     def _pulse_glow(self):
         """Pulsing animation for the glow."""
@@ -998,6 +1092,12 @@ class App(ctk.CTk):
         """Destroy the cursor glow effect."""
         self._glow_running = False
         if self._cursor_glow:
+            if self._cursor_glow == "placeholder":
+                # Race condition: Window is being created right now.
+                # Schedule another attempt to destroy it once it's finished.
+                self.after(50, self._destroy_cursor_glow)
+                return
+                
             try:
                 self._cursor_glow.destroy()
             except:
@@ -1412,6 +1512,15 @@ class App(ctk.CTk):
             os._exit(0)
 
 if __name__ == "__main__":
+    # Enable DPI awareness for sharp UI and accurate coordinates
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1) # Process_System_DPI_Aware
+    except:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware() # Fallback
+        except:
+            pass
+            
     app = App()
     app.protocol("WM_DELETE_WINDOW", app.on_closing)
     app.mainloop()
